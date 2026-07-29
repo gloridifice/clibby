@@ -96,6 +96,16 @@ pub(crate) fn publish_system_clipboard(_paths: &[PathBuf]) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+pub(crate) fn publish_system_clipboard_text(text: &str) -> Result<()> {
+    system_clipboard::write_unicode_text(text)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn publish_system_clipboard_text(_text: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 mod system_clipboard {
     use std::{
         ffi::OsString,
@@ -195,6 +205,56 @@ mod system_clipboard {
             GlobalUnlock(memory);
         }
         Ok(text)
+    }
+
+    pub(super) fn write_unicode_text(text: &str) -> Result<()> {
+        let mut encoded_text: Vec<u16> = text.encode_utf16().collect();
+        encoded_text.push(0);
+        let byte_count = encoded_text
+            .len()
+            .checked_mul(size_of::<u16>())
+            .context("system clipboard text is too large")?;
+
+        let clipboard = ClipboardSession::open()?;
+        let memory = unsafe { GlobalAlloc(GMEM_MOVEABLE, byte_count) };
+        if memory.is_null() {
+            bail!("GlobalAlloc failed: {}", std::io::Error::last_os_error());
+        }
+
+        let memory_pointer = unsafe { GlobalLock(memory) };
+        if memory_pointer.is_null() {
+            unsafe {
+                GlobalFree(memory);
+            }
+            bail!("GlobalLock failed: {}", std::io::Error::last_os_error());
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(
+                encoded_text.as_ptr(),
+                memory_pointer.cast::<u16>(),
+                encoded_text.len(),
+            );
+            GlobalUnlock(memory);
+        }
+
+        if unsafe { EmptyClipboard() } == 0 {
+            unsafe {
+                GlobalFree(memory);
+            }
+            bail!("EmptyClipboard failed: {}", std::io::Error::last_os_error());
+        }
+        if unsafe { SetClipboardData(CF_UNICODETEXT as u32, memory) }.is_null() {
+            unsafe {
+                GlobalFree(memory);
+            }
+            bail!(
+                "SetClipboardData(CF_UNICODETEXT) failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        drop(clipboard);
+        Ok(())
     }
 
     pub(super) fn write_file_list(paths: &[PathBuf]) -> Result<()> {

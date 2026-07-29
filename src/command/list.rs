@@ -54,20 +54,46 @@ pub(crate) fn list_history(store: &Store, number: usize) -> Result<()> {
         return Ok(());
     }
 
-    for (index, entry) in history.entries.iter().rev().take(number).enumerate() {
+    let entries: Vec<_> = history.entries.iter().rev().take(number).collect();
+    let types: Vec<_> = entries.iter().map(|entry| display_type(entry)).collect();
+    let widest_type_length = types
+        .iter()
+        .map(|entry_type| entry_type.chars().count())
+        .max()
+        .expect("history is not empty");
+
+    for (index, (entry, entry_type)) in entries.iter().zip(types).enumerate() {
         println!(
-            "[{index}][{}] {}",
-            display_type(entry),
-            display_content(store, entry)
+            "{}",
+            format_history_row(
+                index,
+                &entry_type,
+                widest_type_length,
+                &display_content(store, entry),
+            )
         );
     }
     Ok(())
 }
 
+fn format_history_row(
+    index: usize,
+    entry_type: &str,
+    widest_type_length: usize,
+    content: &str,
+) -> String {
+    const INDEX_COLOR: &str = "\x1b[90m";
+    const TYPE_COLOR: &str = "\x1b[92m";
+    const RESET: &str = "\x1b[0m";
+
+    let padding = " ".repeat(widest_type_length.saturating_sub(entry_type.chars().count()));
+    format!("{INDEX_COLOR}{index}{RESET} {TYPE_COLOR}{entry_type}{padding}{RESET} {content}")
+}
+
 fn display_type(entry: &ClipEntry) -> String {
     match entry.kind {
-        EntryKind::Text => "text".to_owned(),
-        EntryKind::Directory => "directory".to_owned(),
+        EntryKind::Text => "Text".to_owned(),
+        EntryKind::Directory => "Dir".to_owned(),
         EntryKind::File => entry
             .system_source
             .as_deref()
@@ -76,7 +102,7 @@ fn display_type(entry: &ClipEntry) -> String {
             .and_then(OsStr::to_str)
             .filter(|extension| !extension.is_empty())
             .map(str::to_owned)
-            .unwrap_or_else(|| "file".to_owned()),
+            .unwrap_or_else(|| "File".to_owned()),
     }
 }
 
@@ -124,7 +150,7 @@ mod tests {
 
     use crate::history::{ClipEntry, EntryKind};
 
-    use super::{display_type, text_preview};
+    use super::{display_type, format_history_row, text_preview};
 
     #[test]
     fn display_type_uses_file_extension_or_file() {
@@ -136,10 +162,22 @@ mod tests {
             system_text: None,
             reference_only: true,
         };
-        assert_eq!(display_type(&entry), "file");
+        assert_eq!(display_type(&entry), "File");
 
         entry.system_source = Some(PathBuf::from("C:/work/main.rs"));
         assert_eq!(display_type(&entry), "rs");
+    }
+
+    #[test]
+    fn history_rows_color_index_and_type_and_align_type_column() {
+        assert_eq!(
+            format_history_row(0, "Text", 4, "HelloWorld"),
+            "\x1b[90m0\x1b[0m \x1b[92mText\x1b[0m HelloWorld"
+        );
+        assert_eq!(
+            format_history_row(1, "Dir", 4, "C:\\Foo\\Bar"),
+            "\x1b[90m1\x1b[0m \x1b[92mDir \x1b[0m C:\\Foo\\Bar"
+        );
     }
 
     #[test]
