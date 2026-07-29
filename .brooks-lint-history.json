@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-07-28",
+    "mode": "Architecture Audit",
+    "score": 90,
+    "findings": {
+      "critical": 0,
+      "warning": 2,
+      "suggestion": 0
+    },
+    "scope": "entire project (1 binary crate; src/main.rs)"
+  }
+]
