@@ -1,5 +1,7 @@
 # Clibby
 
+![Clibby logo](assets/logo.png)
+
 A command-line clipboard tool for files, directories, and imported text. File and directory entries are lightweight references to their original paths; `clb` does not recursively copy them into its own cache.
 
 On Windows, `clb` also interoperates with the system file clipboard (`CF_HDROP`):
