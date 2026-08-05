@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Arg, ArgMatches, Command as ClapCommand, value_parser};
 
 use crate::{
-    history::{EntryKind, ensure_existing_content, history_entry},
+    history::{ClipEntry, EntryKind, ensure_existing_content, history_group},
     platform::sync_system_clipboard,
 };
 
@@ -51,52 +51,75 @@ impl Command for PasteCommand {
             .get_one::<usize>("index")
             .copied()
             .context("paste requires a history index")?;
-        let entry = history_entry(context.store(), index)?;
-        if entry.kind == EntryKind::Text {
+        let entries = history_group(context.store(), index)?;
+
+        if let Some(text_entry) = entries.iter().find(|entry| entry.kind == EntryKind::Text) {
+            if entries.len() != 1 {
+                bail!("cannot paste a text entry together with other history items");
+            }
             validate_text_paste_target(target)?;
-        }
 
-        let source = context.store().entry_path(&entry)?;
-        ensure_existing_content(&source, &entry)?;
-
-        if entry.kind == EntryKind::Text {
+            let source = context.store().entry_path(text_entry)?;
+            ensure_existing_content(&source, text_entry)?;
             let mut stdout = std::io::stdout().lock();
             write_text_clipboard(&source, &mut stdout)
                 .context("could not write text clipboard content to standard output")?;
             return Ok(());
         }
 
-        let destination = paste_destination(target, &entry.name)?;
-        if destination.exists() {
-            bail!(
-                "destination already exists; refusing to overwrite it: {}",
-                destination.display()
-            );
-        }
-        if entry.kind == EntryKind::Directory && destination.starts_with(&source) {
-            bail!(
-                "cannot paste a directory inside itself: {}",
-                destination.display()
-            );
+        let mut sources = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let source = context.store().entry_path(entry)?;
+            ensure_existing_content(&source, entry)?;
+            sources.push(source);
         }
 
-        let result = (|| -> Result<()> {
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "could not create destination directory: {}",
-                        parent.display()
-                    )
-                })?;
+        let destinations = paste_destinations(target, &entries)?;
+        for (entry, (source, destination)) in
+            entries.iter().zip(sources.iter().zip(&destinations))
+        {
+            if destination.exists() {
+                bail!(
+                    "destination already exists; refusing to overwrite it: {}",
+                    destination.display()
+                );
             }
-            copy_path(&source, &destination, entry.kind)
+            if entry.kind == EntryKind::Directory && destination.starts_with(source) {
+                bail!(
+                    "cannot paste a directory inside itself: {}",
+                    destination.display()
+                );
+            }
+        }
+
+        let mut pasted: Vec<usize> = Vec::new();
+        let result = (|| -> Result<()> {
+            for (index, (entry, (source, destination))) in entries
+                .iter()
+                .zip(sources.iter().zip(&destinations))
+                .enumerate()
+            {
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "could not create destination directory: {}",
+                            parent.display()
+                        )
+                    })?;
+                }
+                copy_path(source, destination, entry.kind)?;
+                pasted.push(index);
+                println!("Pasted to: {}", destination.display());
+            }
+            Ok(())
         })();
         if let Err(error) = result {
-            let _ = remove_path(&destination, entry.kind);
+            for &index in pasted.iter().rev() {
+                let _ = remove_path(&destinations[index], entries[index].kind);
+            }
             return Err(error);
         }
 
-        println!("Pasted to: {}", destination.display());
         Ok(())
     }
 }
@@ -119,19 +142,34 @@ fn write_text_clipboard(source: &Path, output: &mut impl Write) -> Result<()> {
         .context("could not write text clipboard content")
 }
 
-fn paste_destination(target: Option<&Path>, source_name: &str) -> Result<PathBuf> {
+fn paste_destinations(target: Option<&Path>, entries: &[ClipEntry]) -> Result<Vec<PathBuf>> {
     let current_dir =
         env::current_dir().context("could not determine the current working directory")?;
-    let destination = match target {
-        None => current_dir.join(source_name),
-        Some(target) if has_trailing_separator(target) => {
-            let directory = absolute_path(&current_dir, target);
-            directory.join(source_name)
+    let destinations = match (target, entries.len()) {
+        // No target: every item lands in the current directory.
+        (None, _) => entries
+            .iter()
+            .map(|entry| current_dir.join(&entry.name))
+            .collect(),
+        // Exact destination name is only meaningful for a single item.
+        (Some(target), 1) if !has_trailing_separator(target) => {
+            vec![absolute_path(&current_dir, target)]
         }
-        Some(target) => absolute_path(&current_dir, target),
+        // A trailing separator means "paste into this directory".
+        (Some(target), _) if has_trailing_separator(target) => {
+            let directory = absolute_path(&current_dir, target);
+            entries
+                .iter()
+                .map(|entry| directory.join(&entry.name))
+                .collect()
+        }
+        (Some(target), count) => bail!(
+            "a file destination is invalid when pasting {count} items (use a directory with a trailing separator): {}",
+            target.display()
+        ),
     };
 
-    Ok(destination)
+    Ok(destinations)
 }
 
 fn absolute_path(current_dir: &Path, path: &Path) -> PathBuf {
@@ -225,7 +263,23 @@ fn remove_path(path: &Path, kind: EntryKind) -> Result<()> {
 mod tests {
     use std::{env, fs, path::Path};
 
-    use super::{has_trailing_separator, validate_text_paste_target, write_text_clipboard};
+    use crate::history::{ClipEntry, EntryKind};
+
+    use super::{
+        has_trailing_separator, paste_destinations, validate_text_paste_target, write_text_clipboard,
+    };
+
+    fn file_entry(name: &str) -> ClipEntry {
+        ClipEntry {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            kind: EntryKind::File,
+            system_source: None,
+            system_text: None,
+            reference_only: false,
+            group: Some("g1".to_owned()),
+        }
+    }
 
     #[test]
     fn trailing_separator_means_directory_target() {
@@ -251,5 +305,48 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn group_paste_without_target_uses_current_directory() {
+        let entries = vec![file_entry("a.txt"), file_entry("b.txt"), file_entry("c.txt")];
+        let destinations = paste_destinations(None, &entries).unwrap();
+        let current = env::current_dir().unwrap();
+        assert_eq!(
+            destinations,
+            vec![
+                current.join("a.txt"),
+                current.join("b.txt"),
+                current.join("c.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn group_paste_into_directory_target_keeps_each_name() {
+        let entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        let destinations =
+            paste_destinations(Some(Path::new("out\\")), &entries).unwrap();
+        let current = env::current_dir().unwrap();
+        assert_eq!(
+            destinations,
+            vec![current.join("out").join("a.txt"), current.join("out").join("b.txt")]
+        );
+    }
+
+    #[test]
+    fn group_paste_rejects_an_exact_file_target() {
+        let entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        assert!(paste_destinations(Some(Path::new("out.txt")), &entries).is_err());
+    }
+
+    #[test]
+    fn single_item_paste_keeps_exact_destination_name() {
+        let entries = vec![file_entry("a.txt")];
+        let destinations = paste_destinations(Some(Path::new("out.txt")), &entries).unwrap();
+        assert_eq!(
+            destinations,
+            vec![env::current_dir().unwrap().join("out.txt")]
+        );
     }
 }

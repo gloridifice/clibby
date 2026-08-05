@@ -161,6 +161,7 @@ mod tests {
             system_source: Some(PathBuf::from("C:/work/README")),
             system_text: None,
             reference_only: true,
+            group: None,
         };
         assert_eq!(display_type(&entry), "File");
 

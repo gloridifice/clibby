@@ -21,6 +21,10 @@ pub(crate) struct ClipEntry {
     pub(crate) system_text: Option<String>,
     #[serde(default)]
     pub(crate) reference_only: bool,
+    /// Id shared by every entry recorded from one multi-item clipboard
+    /// selection (for example, several files copied together in Explorer).
+    #[serde(default)]
+    pub(crate) group: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -135,7 +139,7 @@ impl Store {
     }
 }
 
-pub(crate) fn record_path_reference(store: &Store, source: &Path) -> Result<PathBuf> {
+pub(crate) fn record_path_reference(store: &Store, source: &Path, group: Option<&str>) -> Result<PathBuf> {
     let source_metadata = fs::symlink_metadata(source)
         .with_context(|| format!("could not read source path: {}", source.display()))?;
     if source_metadata.file_type().is_symlink() {
@@ -180,6 +184,7 @@ pub(crate) fn record_path_reference(store: &Store, source: &Path) -> Result<Path
         system_source: Some(system_source.clone()),
         system_text: None,
         reference_only: true,
+        group: group.map(str::to_owned),
     };
     let mut history = store.load_history()?;
     history.entries.push(entry);
@@ -221,6 +226,7 @@ pub(crate) fn snapshot_text_to_history(store: &Store, text: &str) -> Result<Clip
         system_source: None,
         system_text: Some(text.to_owned()),
         reference_only: false,
+        group: None,
     };
     let mut history = store.load_history()?;
     history.entries.push(entry.clone());
@@ -246,6 +252,42 @@ pub(crate) fn history_entry(store: &Store, index: usize) -> Result<ClipEntry> {
                 history.entries.len()
             )
         })
+}
+
+/// Returns the entry at `index` together with every other entry that was
+/// recorded in the same clipboard selection (same group id). Entries that are
+/// not part of a multi-item selection form a group of exactly one.
+pub(crate) fn history_group(store: &Store, index: usize) -> Result<Vec<ClipEntry>> {
+    let history = store.load_history()?;
+    group_members(&history.entries, index)
+}
+
+fn group_members(entries: &[ClipEntry], index: usize) -> Result<Vec<ClipEntry>> {
+    let selected = entries
+        .iter()
+        .rev()
+        .nth(index)
+        .cloned()
+        .with_context(|| {
+            format!(
+                "history index {index} does not exist; history contains {} item(s)",
+                entries.len()
+            )
+        })?;
+
+    let Some(group_id) = selected.group.as_deref() else {
+        return Ok(vec![selected]);
+    };
+
+    let members = entries
+        .iter()
+        .filter(|entry| entry.group.as_deref() == Some(group_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    if members.is_empty() {
+        bail!("clipboard group {group_id} contains no history entries");
+    }
+    Ok(members)
 }
 
 pub(crate) fn ensure_existing_content(path: &Path, entry: &ClipEntry) -> Result<()> {
@@ -311,14 +353,78 @@ fn new_entry_id() -> String {
     format!("{nanos}-{}", std::process::id())
 }
 
+pub(crate) fn new_group_id() -> String {
+    format!("g-{}", new_entry_id())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_safe_component;
+    use super::{group_members, is_safe_component};
+    use crate::history::{ClipEntry, EntryKind};
+
+    fn entry(name: &str, group: Option<&str>) -> ClipEntry {
+        ClipEntry {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            kind: EntryKind::File,
+            system_source: None,
+            system_text: None,
+            reference_only: false,
+            group: group.map(str::to_owned),
+        }
+    }
 
     #[test]
     fn safe_component_rejects_path_traversal() {
         assert!(is_safe_component("report.txt"));
         assert!(!is_safe_component(".."));
         assert!(!is_safe_component("nested/file.txt"));
+    }
+
+    #[test]
+    fn ungrouped_entry_is_its_own_group() {
+        let entries = vec![entry("a.txt", None), entry("b.txt", None)];
+        assert_eq!(group_members(&entries, 0).unwrap().len(), 1);
+        assert_eq!(group_members(&entries, 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn grouped_entry_returns_whole_selection() {
+        let entries = vec![
+            entry("a.txt", Some("g1")),
+            entry("b.txt", Some("g1")),
+            entry("c.txt", Some("g1")),
+            entry("later.txt", None),
+        ];
+        // Index 0 is the newest entry, which is a separate selection.
+        let newest = group_members(&entries, 0).unwrap();
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].name, "later.txt");
+
+        // Selecting any member of the group returns the whole selection.
+        let group = group_members(&entries, 1).unwrap();
+        let mut names = group.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
+
+        let group = group_members(&entries, 3).unwrap();
+        assert_eq!(group.len(), 3);
+    }
+
+    #[test]
+    fn group_is_scoped_to_its_own_selection() {
+        let entries = vec![
+            entry("a.txt", Some("g1")),
+            entry("b.txt", Some("g1")),
+            entry("c.txt", Some("g2")),
+        ];
+        let group = group_members(&entries, 0).unwrap();
+        assert_eq!(group.len(), 1);
+        assert_eq!(group[0].name, "c.txt");
+    }
+
+    #[test]
+    fn group_members_reports_missing_index() {
+        assert!(group_members(&[entry("a.txt", None)], 5).is_err());
     }
 }

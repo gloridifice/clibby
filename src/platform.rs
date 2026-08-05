@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::history::Store;
 #[cfg(target_os = "windows")]
-use crate::history::{ClipEntry, record_path_reference, snapshot_text_to_history};
+use crate::history::{ClipEntry, new_group_id, record_path_reference, snapshot_text_to_history};
 
 pub(crate) fn sync_system_clipboard(store: &Store) {
     #[cfg(not(target_os = "windows"))]
@@ -43,8 +43,11 @@ fn sync_system_files(store: &Store, paths: Vec<PathBuf>) -> Result<()> {
         return Ok(());
     }
 
+    // Entries recorded from one clipboard selection share a group id so
+    // `paste` can restore the whole selection instead of a single file.
+    let group = new_group_id();
     for path in paths {
-        if let Err(error) = record_path_reference(store, &path) {
+        if let Err(error) = record_path_reference(store, &path, Some(&group)) {
             eprintln!(
                 "Warning: could not import system clipboard path {}: {error:#}",
                 path.display()

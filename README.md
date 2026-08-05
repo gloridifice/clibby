@@ -38,7 +38,7 @@ cat "README.md" | clb # you can pipe text into clipboard by this
 ## Commands
 
 ```text
-clb copy|c <PATH>
+clb copy|c <PATH>...
 clb paste|p [TARGET] [--index|-i <INDEX>]
 clb                     # Show the newest item, or copy piped UTF-8 text.
 clb list|ls [--number|-n <NUMBER>]
@@ -46,7 +46,7 @@ clb clean               # Clean cache
 clb invoke|i [INDEX]    # Open file in clipboard by default software
 ```
 
-`paste --index` also accepts `-n` as a compatibility alias. Index `0` always means the most recent history item.
+`paste --index` also accepts `-n` as a compatibility alias. Index `0` always means the most recent history item. Multiple paths recorded together (several files copied at once in Explorer, or `clb c a.txt b.txt`) form one selection: pasting any of them pastes the whole selection.
 
 ## Examples
 
@@ -56,11 +56,14 @@ clb invoke|i [INDEX]    # Open file in clipboard by default software
 clb c a.txt
 clb copy .\assets
 
-# Paste the newest entry into the current directory.
+# Multiple paths are copied as one selection; `clb p` restores all of them.
+clb c a.txt b.txt c.txt
+
+# Paste the newest entry (or the whole newest selection) into the current directory.
 clb p
 
 # A trailing slash or backslash means "paste into this directory".
-# The result is foo\a.txt.
+# The result is foo\a.txt (or foo\a.txt, foo\b.txt, foo\c.txt for a selection).
 clb p foo\
 
 # Without a trailing separator, foo is the exact destination name.
@@ -84,7 +87,7 @@ clb i
 clb i 2
 ```
 
-For file and directory entries, `paste` copies the referenced source to the destination and refuses to overwrite an existing destination. Parent directories are created when necessary. A file or directory reference cannot be pasted or opened after its original source has been moved or deleted.
+For file and directory entries, `paste` copies the referenced sources to the destination and refuses to overwrite an existing destination. When the selected history item is part of a multi-item selection (several files copied together in Explorer, or several paths passed to `clb c`), the whole selection is pasted; `TARGET` must then be a directory (use a trailing separator), or be omitted to paste into the current directory. Parent directories are created when necessary. A file or directory reference cannot be pasted or opened after its original source has been moved or deleted.
 
 For text entries, `paste` writes the cached UTF-8 text directly to standard output, without adding a status message or newline, so it can be piped to another command. Do not provide `TARGET` when pasting text; text entries cannot be written to an output path.
 
