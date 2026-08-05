@@ -9,5 +9,16 @@
       "suggestion": 0
     },
     "scope": "entire project (1 binary crate; src/main.rs)"
+  },
+  {
+    "date": "2026-08-05",
+    "mode": "PR Review",
+    "score": 100,
+    "findings": {
+      "critical": 0,
+      "warning": 0,
+      "suggestion": 0
+    },
+    "scope": "working-tree diff: src/cli.rs (piped-text BOM strip)"
   }
 ]

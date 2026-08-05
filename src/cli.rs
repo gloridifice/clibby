@@ -41,17 +41,39 @@ fn read_piped_text() -> Result<String> {
         .lock()
         .read_to_string(&mut text)
         .context("could not read UTF-8 text from standard input")?;
-    Ok(text)
+    Ok(strip_leading_bom(text))
+}
+
+/// Windows PowerShell 5.1 prepends a UTF-8 byte-order mark (U+FEFF) to the
+/// stream when it pipes text to a native executable, even though the piped
+/// content itself has no BOM. Drop that artifact so the clipboard and history
+/// contain exactly what was piped.
+fn strip_leading_bom(text: String) -> String {
+    match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_owned(),
+        None => text,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::should_capture_piped_text;
+    use super::{should_capture_piped_text, strip_leading_bom};
 
     #[test]
     fn only_a_no_subcommand_invocation_with_redirected_stdin_captures_text() {
         assert!(should_capture_piped_text(false, false));
         assert!(!should_capture_piped_text(false, true));
         assert!(!should_capture_piped_text(true, false));
+    }
+
+    #[test]
+    fn leading_bom_is_stripped_but_content_is_kept() {
+        assert_eq!(strip_leading_bom("\u{feff}hello".to_owned()), "hello");
+    }
+
+    #[test]
+    fn text_without_bom_is_left_untouched() {
+        assert_eq!(strip_leading_bom("hello\u{feff}".to_owned()), "hello\u{feff}");
+        assert_eq!(strip_leading_bom("hello".to_owned()), "hello");
     }
 }
