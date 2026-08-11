@@ -1,16 +1,12 @@
-# Clibby
+```
+       _ _ _    _
+    __| (_) |__| |__ _  _
+   / _| | | '_ \ '_ \ || |
+   \__|_|_|_.__/_.__/\_, |
+                     |__/
+```
 
-![Clibby logo](assets/logo.png)
-
-A command-line clipboard tool for files, directories, and imported text. File and directory entries are lightweight references to their original paths; `clb` does not recursively copy them into its own cache.
-
-On Windows, `clb` also interoperates with the system file clipboard (`CF_HDROP`):
-
-- `clb copy` publishes the copied file or directory to the Windows clipboard, so it can be pasted into Explorer and other file-aware applications.
-- Before `paste`, `list`, `invoke`, or `clb` without a subcommand, `clb` records file and directory paths currently copied by Explorer or another Windows application. It does not recursively copy those paths, so listing a large directory remains fast.
-- It also imports Unicode text copied with `Ctrl+C` from applications such as editors and browsers. Text is stored as a UTF-8 `clipboard.txt` snapshot and shown with a short preview in `list` output.
-- Piping UTF-8 text to `clb` with no subcommand copies it to the Windows text clipboard (`CF_UNICODETEXT`) and records it in history.
-- Raw image, HTML, and other non-file/non-text clipboard formats are intentionally left unchanged.
+`clibby` is a lightweight command-line clipboard tool for files, directories, and imported text. File and directory entries are lightweight references to their original paths; `clb` does not recursively copy them into its own cache.
 
 ## QuickStart
 
@@ -24,16 +20,23 @@ cargo install --path .
 
 ### Usage
 
+`clibby` is following this format: `clb <cmd> <arguments> --<label>`
+
 ```powershell
-clb c hello.rs # copy a file (also works with folders)
+clb c hello.rs # c = copy a file ('s path actually) (also works with folders)
 cd D:\foo\     # enter anthor directory
 clb p          # hello.rs will be pasted under foo
 ```
+
+You can also copy a file/folder under Explorer, then use `clb p` paste it in your termianl.
 
 ```powershell
 cat "README.md" | clb # you can pipe text into clipboard by this
 ```
 
+## Platform support
+
+- Windows only now.
 
 ## Commands
 
@@ -116,6 +119,3 @@ $env:CLB_DATA_DIR = "D:\clb-data"
 clb ls
 ```
 
-## Platform support
-
-File-reference history and default-application opening work on Windows, macOS, and Linux. Windows provides the system clipboard bridge. On macOS and Linux, `clb` currently keeps history only inside its own data directory.
