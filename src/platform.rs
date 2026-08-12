@@ -75,17 +75,40 @@ fn sync_system_text(store: &Store, text: &str) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn system_paths_match_history(history: &[ClipEntry], paths: &[PathBuf]) -> bool {
-    if paths.len() > history.len() {
+    if paths.is_empty() || paths.len() > history.len() {
         return false;
     }
 
     let recent_entries = &history[history.len() - paths.len()..];
-    recent_entries.iter().zip(paths).all(|(entry, path)| {
+    let paths_match = recent_entries.iter().zip(paths).all(|(entry, path)| {
         entry
             .system_source
             .as_ref()
             .is_some_and(|source| source == path)
-    })
+    });
+    if !paths_match {
+        return false;
+    }
+
+    // The matching tail must be exactly one complete clipboard selection;
+    // otherwise a re-import is required so `paste` restores the whole
+    // selection. Tail entries without a group (recorded before groups
+    // existed, or by single-file copies) would paste only the newest one,
+    // and a tail entry belonging to a larger group would paste files that
+    // are no longer part of the selection.
+    match recent_entries[0].group.as_deref() {
+        None => paths.len() == 1,
+        Some(group) => {
+            recent_entries
+                .iter()
+                .all(|entry| entry.group.as_deref() == Some(group))
+                && history
+                    .iter()
+                    .filter(|entry| entry.group.as_deref() == Some(group))
+                    .count()
+                    == paths.len()
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -392,4 +415,101 @@ pub(crate) fn open_with_default_application(path: &Path) -> Result<()> {
 #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
 pub(crate) fn open_with_default_application(_path: &Path) -> Result<()> {
     bail!("opening an item with the default application is not supported on this operating system")
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::system_paths_match_history;
+    use crate::history::{ClipEntry, EntryKind};
+
+    fn file_entry(name: &str, group: Option<&str>) -> ClipEntry {
+        ClipEntry {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            kind: EntryKind::File,
+            system_source: Some(PathBuf::from(format!("C:/src/{name}"))),
+            system_text: None,
+            reference_only: true,
+            group: group.map(str::to_owned),
+        }
+    }
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names
+            .iter()
+            .map(|name| PathBuf::from(format!("C:/src/{name}")))
+            .collect()
+    }
+
+    #[test]
+    fn tail_matching_paths_as_one_group_is_in_sync() {
+        let history = vec![
+            file_entry("old.txt", Some("g0")),
+            file_entry("a.txt", Some("g1")),
+            file_entry("b.txt", Some("g1")),
+        ];
+        assert!(system_paths_match_history(
+            &history,
+            &paths(&["a.txt", "b.txt"])
+        ));
+    }
+
+    #[test]
+    fn tail_matching_paths_without_group_needs_reimport() {
+        // Entries recorded before groups existed (or by separate single-file
+        // copies) must be imported again so the selection gets a group.
+        let history = vec![file_entry("a.txt", None), file_entry("b.txt", None)];
+        assert!(!system_paths_match_history(
+            &history,
+            &paths(&["a.txt", "b.txt"])
+        ));
+    }
+
+    #[test]
+    fn tail_matching_paths_across_different_groups_needs_reimport() {
+        let history = vec![
+            file_entry("a.txt", Some("g1")),
+            file_entry("b.txt", Some("g2")),
+        ];
+        assert!(!system_paths_match_history(
+            &history,
+            &paths(&["a.txt", "b.txt"])
+        ));
+    }
+
+    #[test]
+    fn single_path_with_tail_entry_in_larger_group_needs_reimport() {
+        let history = vec![
+            file_entry("a.txt", Some("g1")),
+            file_entry("b.txt", Some("g1")),
+        ];
+        assert!(!system_paths_match_history(&history, &paths(&["b.txt"])));
+    }
+
+    #[test]
+    fn single_path_with_ungrouped_tail_entry_is_in_sync() {
+        let history = vec![file_entry("a.txt", Some("g1")), file_entry("b.txt", None)];
+        assert!(system_paths_match_history(&history, &paths(&["b.txt"])));
+    }
+
+    #[test]
+    fn single_path_with_single_member_group_tail_is_in_sync() {
+        let history = vec![file_entry("a.txt", Some("g1"))];
+        assert!(system_paths_match_history(&history, &paths(&["a.txt"])));
+    }
+
+    #[test]
+    fn different_paths_need_import() {
+        let history = vec![file_entry("a.txt", Some("g1"))];
+        assert!(!system_paths_match_history(
+            &history,
+            &paths(&["other.txt"])
+        ));
+        assert!(!system_paths_match_history(
+            &history,
+            &paths(&["a.txt", "other.txt"])
+        ));
+    }
 }
